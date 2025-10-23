@@ -16,9 +16,9 @@ python -m venv .venv
 
 .venv\Scripts\activate
 
-source .venv/bin/activate
+python.exe -m pip install --upgrade pip
 
-pip install -r requirements.txt
+python.exe -m pip install -r requirements.txt
 ```
 
 Launch Locally

@@ -1,0 +1,32 @@
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore notebooks
+*.ipynb
+
+# Ignore local data
+data/
+datasets/
+*.csv
+*.zip
+
+# Ignore logs and temp files
+logs/
+*.log
+tmp/
+*.tmp
+
+.idea/
+
+# Ignore git
+.git
+.gitignore
+
+# Ignore local virtualenvs
+venv/
+.env
+
+# Ignore large model artifacts if you plan to COPY them selectively
+*.tar.gz

@@ -1,8 +1,8 @@
 fastapi~=0.115.12
-uvicorn~=0.34.3
-torch~=2.5.1+cu121
-torchvision~=0.20.1+cu121
-torchaudio~=2.5.1+cu121
+uvicorn[standard]~=0.34.3
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
 pandas~=2.3.3
 numpy~=2.2.6
 scikit-learn~=1.7.2
