@@ -1,7 +1,5 @@
-# pip install torch torchvision torchaudio pytorch-lightning torchmetrics lightning pandas numpy scikit-learn matplotlib seaborn Pillow opencv-python kagglehub tqdm albumentations
 import os
-import warnings
-
+from tqdm import tqdm
 import kagglehub
 import pandas as pd
 import torch
@@ -14,24 +12,16 @@ from PIL import Image
 from sklearn.metrics import classification_report, accuracy_score, f1_score
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch.utils.data import Dataset, DataLoader
-
-warnings.filterwarnings('ignore')
+import matplotlib.pyplot as plt
 
 # POBRANIE DATASETU Z KAGGLEHUB
 def load_dataset():
-    path = kagglehub.dataset_download("nirmalsankalana/fashion-product-text-images-dataset")
-    print("Path to dataset files:", path)
-
-    # ZNALEZIENIE CSV
-    csv_files = [f for f in os.listdir(path) if f.lower().endswith(".csv")]
-    data_csv = os.path.join(path, csv_files[0])
-    print("Found CSV file:", data_csv)
-
-    df = pd.read_csv(data_csv)
-    df = df.dropna(subset=["image", "description", "category"])
+    path = kagglehub.dataset_download("paramaggarwal/fashion-product-images-dataset")
+    csv_file = next(f for f in os.listdir(path) if f.endswith(".csv"))
+    df = pd.read_csv(os.path.join(path, csv_file)).dropna(subset=["image", "description", "category"])
     df["image"] = df["image"].astype(str)
-
     return df, path
+
 
 # KATEGORIE
 COLORS = [
@@ -68,70 +58,63 @@ CATEGORY_TO_STYLES = {
     "heels": ["formal", "party"]
 }
 
+
 # SZUKANIE SŁOW KLUCZOWYCH W TEKŚCIE
 def extract_keywords(text, keywords, default):
-    text = str(text).lower()
-    return [kw for kw in keywords if kw in text] or [default]
+    return [k for k in keywords if k in str(text).lower()] or [default]
+
 
 # ZROBIENIE LABELI
 def build_labels(row):
-
     desc = str(row["description"]).lower()
     base = [row["category"].lower()]
     colors = extract_keywords(desc, COLORS, "unknown_color")
     styles = extract_keywords(desc, STYLES, "unknown_style")
-
     # JEDEN TYP UBRANIA
-    extra = [next((cat for cat in EXTRA_CATEGORIES if cat in desc), "unknown_category")]
-
+    extra = [next((c for c in EXTRA_CATEGORIES if c in desc), "unknown_category")]
     # WYBRANIE STYLI PATRZĄC NA KATEGORIE
-    auto_styles = sum((CATEGORY_TO_STYLES.get(cat, []) for cat in base + extra), [])
-
+    auto_styles = sum((CATEGORY_TO_STYLES.get(c, []) for c in base + extra), [])
     return list(set(base + colors + styles + extra + auto_styles))
 
+
 # TRANSFORMACJE DANYCH
-transform = transforms.Compose([
-    transforms.Resize((160,160)),
+train_transform = transforms.Compose([
+    transforms.Resize((160, 160)),
+    transforms.RandomResizedCrop(160, scale=(0.8, 1.0)),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+val_test_transform = transforms.Compose([
+    transforms.Resize((160, 160)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
 # DATASET
 class FashionDataset(Dataset):
     def __init__(self, df, img_dir, transform=None, mlb=None):
-        self.df = df.reset_index(drop=True)
-        self.img_dir = img_dir
+        self.imgs = df["image"].astype(str).tolist()
+        self.labels = df["labels"].tolist()
         self.transform = transform
-
-        self.files = self.df["image"].astype(str).tolist()
-        self.labels_list = self.df["labels"].tolist()
-
-        # MultiLabelBinarizer
-        if mlb is None:
-            self.mlb = MultiLabelBinarizer()
-            self.labels_binary = self.mlb.fit_transform(self.labels_list)
-        else:
-            self.mlb = mlb
-            self.labels_binary = self.mlb.transform(self.labels_list)
+        self.img_dir = img_dir
+        self.mlb = mlb or MultiLabelBinarizer().fit(self.labels)
+        self.bin_labels = self.mlb.transform(self.labels)
 
     def __len__(self):
-        return len(self.files)
+        return len(self.imgs)
 
     def __getitem__(self, idx):
-        file_name = self.files[idx]
-        img_path = os.path.join(self.img_dir, file_name)
-
+        img_path = os.path.join(self.img_dir, self.imgs[idx])
         # WCZYTANIE OBRAZU
         try:
-            image = Image.open(img_path).convert("RGB")
+            img = Image.open(img_path).convert("RGB")
         except FileNotFoundError:
-            image = Image.new("RGB", (224, 224), (0, 0, 0))
+            img = Image.new("RGB", (224, 224), (0, 0, 0))
 
-        if self.transform:
-            image = self.transform(image)
-
-        labels = torch.FloatTensor(self.labels_binary[idx])
-        return image, labels
+        img = self.transform(img)
+        return img, torch.FloatTensor(self.bin_labels[idx])
 
 
 # TRENING JEDNEJ EPOKI
@@ -139,103 +122,132 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss = 0
 
-    for images, labels in loader:
-        images, labels = images.to(device), labels.to(device)
-
+    for imgs, labels in tqdm(loader, desc="Training", leave=False):
+        imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
+        loss = criterion(model(imgs), labels)
         loss.backward()
         optimizer.step()
-
         total_loss += loss.item()
     return total_loss / len(loader)
 
-# WALIDACJA
-def validate(model, loader, criterion, device, mlb, threshold=0.5):
+# EWALUACJA
+def evaluate(model, loader, criterion, device, mlb, threshold=0.3):
     model.eval()
     total_loss = 0
     all_preds, all_labels = [], []
 
     with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            total_loss += loss.item()
-
-            preds = (torch.sigmoid(outputs) > threshold).int().cpu()
-            all_preds.append(preds)
+        for imgs, labels in tqdm(loader, desc="Evaluating", leave=False):
+            imgs, labels = imgs.to(device), labels.to(device)
+            outputs = model(imgs)
+            total_loss += criterion(outputs, labels).item()
+            all_preds.append((torch.sigmoid(outputs) > threshold).cpu())
             all_labels.append(labels.cpu())
+    labels_true, labels_pred = torch.cat(all_labels).numpy(), torch.cat(all_preds).numpy()
 
-    all_preds = torch.cat(all_preds).numpy()
-    all_labels = torch.cat(all_labels).numpy()
-
-    acc = accuracy_score(all_labels, all_preds)
-    f1 = f1_score(all_labels, all_preds, average="macro")
-
-    report = classification_report(all_labels, all_preds, target_names=mlb.classes_, zero_division=0)
-    return total_loss / len(loader), acc, f1, report
+    return {
+        "loss": total_loss / len(loader),
+        "acc": accuracy_score(labels_true, labels_pred),
+        "f1": f1_score(labels_true, labels_pred, average="macro"),
+        "report": classification_report(labels_true, labels_pred, target_names=mlb.classes_, zero_division=0)
+    }
 
 # TRENING
 def main_training(train_dataset, val_dataset, test_dataset, device):
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2, pin_memory=True)
+    loaders = {
+        "train": DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=4, pin_memory=True),
+        "val": DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True),
+        "test": DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2, pin_memory=True)
+    }
 
-    num_classes = len(train_dataset.mlb.classes_)
     model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+    for p in model.parameters():
+        p.requires_grad = False
 
-    for param in model.parameters():
-        param.requires_grad = False
-
-    model.fc = nn.Sequential(
-        nn.Dropout(0.3),
-        nn.Linear(model.fc.in_features, num_classes)
-    )
-
+    model.fc = nn.Linear(model.fc.in_features, len(train_dataset.mlb.classes_))
     model = model.to(device)
+
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.fc.parameters(), lr=1e-4)
 
-    EPOCHS = 5
+    history = {
+        "train_loss": [], "train_acc": [], "train_f1": [],
+        "val_loss": [], "val_acc": [], "val_f1": []
+    }
     best_val_loss = float("inf")
 
-    for epoch in range(1, EPOCHS + 1):
-        print(f"\nEpoch {epoch}/{EPOCHS}")
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        print(f"Train Loss: {train_loss:.4f}")
+    for epoch in range(1, 21):
+        print(f"\nEpoch {epoch}")
+        train_loss = train_one_epoch(model, loaders["train"], optimizer, criterion, device)
+        train_metrics = evaluate(model, loaders["train"], criterion, device, train_dataset.mlb)
+        val_metrics = evaluate(model, loaders["val"], criterion, device, train_dataset.mlb)
 
-        val_loss, val_acc, val_f1, report = validate(model, val_loader, criterion, device, train_dataset.mlb)
-        print(f"Val Loss: {val_loss:.4f}")
-        print(f"Val Acc:  {val_acc:.4f} | F1: {val_f1:.4f}")
-        print(report)
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_metrics["acc"])
+        history["train_f1"].append(train_metrics["f1"])
+        history["val_loss"].append(val_metrics["loss"])
+        history["val_acc"].append(val_metrics["acc"])
+        history["val_f1"].append(val_metrics["f1"])
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_metrics["loss"] < best_val_loss:
+            best_val_loss = val_metrics["loss"]
             torch.save(model.state_dict(), "best_model.pth")
             print("Zapisano najlepszy model.")
 
     print("\nTrening zakończony.")
+
+    plot_curves(history)
+    test_metrics = evaluate(model, loaders["test"], criterion, device, train_dataset.mlb)
+    print(f"Test Loss: {test_metrics['loss']:.4f} | Acc: {test_metrics['acc']:.4f} | F1: {test_metrics['f1']:.4f}")
+    print(test_metrics["report"])
     return model
 
 
-def predict_image(model, img_input, mlb, threshold=0.5, device="cpu"):
-    if isinstance(img_input, str):
-        img = Image.open(img_input).convert("RGB")
-    else:
-        img = img_input
+def plot_curves(history):
+    epochs = range(1, len(history["train_loss"]) + 1)
+    plt.figure(figsize=(12, 5))
 
-    img_tensor = transform(img).unsqueeze(0).to(device)
+    # Wykres strat
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, history["train_loss"], label="Train Loss")
+    plt.plot(epochs, history["val_loss"], label="Val Loss")
+    plt.title("Loss per Epoch")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.grid(True)
 
+    # Wykres metryk
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, history["train_acc"], label="Train Acc")
+    plt.plot(epochs, history["val_acc"], label="Val Acc")
+    plt.plot(epochs, history["train_f1"], label="Train F1")
+    plt.plot(epochs, history["val_f1"], label="Val F1")
+    plt.title("Accuracy and F1 per Epoch")
+    plt.xlabel("Epoch")
+    plt.ylabel("Score")
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+    plt.savefig("training_curves.png")
+
+def predict_image(model, img, mlb, threshold=0.3, device="cpu"):
+    img = Image.open(img).convert("RGB") if isinstance(img, str) else img
+    x = train_transform(img).unsqueeze(0).to(device)
     with torch.no_grad():
-        outputs = model(img_tensor)
-        probs = torch.sigmoid(outputs).cpu().numpy()[0]
-        preds = (probs > threshold).astype(int)
+        preds_raw = torch.sigmoid(model(x)).cpu().numpy()[0]
+        preds = preds_raw > threshold
 
-    labels = [cls for cls, p in zip(mlb.classes_, preds) if p == 1]
-    return labels
+    selected = [cls for cls, p in zip(mlb.classes_, preds) if p]
 
+    if not selected:
+        best_idx = preds_raw.argmax()
+        selected = [mlb.classes_[best_idx]]
+
+    return selected
 
 category_pl = {
     "tshirts": "koszulka",
@@ -300,43 +312,15 @@ extra_pl = {**category_pl}
 
 def translate_labels(labels):
     translated = []
-    for lab in labels:
-        if lab in category_pl:
-            translated.append(category_pl[lab])
-        elif lab in color_pl:
-            translated.append(color_pl[lab])
-        elif lab in style_pl:
-            translated.append(style_pl[lab])
-        elif lab in extra_pl:
-            translated.append(extra_pl[lab])
+    for label in labels:
+        if label in category_pl:
+            translated.append(category_pl[label])
+        elif label in color_pl:
+            translated.append(color_pl[label])
+        elif label in style_pl:
+            translated.append(style_pl[label])
+        elif label in extra_pl:
+            translated.append(extra_pl[label])
         else:
-            translated.append(lab)
+            translated.append(label)
     return translated
-
-# if __name__ == "__main__":
-#     torch.multiprocessing.freeze_support()
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#
-#     df, path = load_dataset()
-#
-#     df["labels"] = df.apply(build_labels, axis=1)
-#
-#     train_df, test_df = train_test_split(df, test_size=0.1, random_state=42)
-#     train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42)
-#
-#     img_dir = os.path.join(path, "data")
-#
-#     mlb = MultiLabelBinarizer()
-#     mlb.fit(train_df["labels"].tolist())
-#
-#     train_dataset = FashionDataset(train_df, img_dir, transform=transform, mlb=mlb)
-#     val_dataset = FashionDataset(val_df, img_dir, transform=transform, mlb=mlb)
-#     test_dataset = FashionDataset(test_df, img_dir, transform=transform, mlb=mlb)
-#
-#     model = main_training()
-#     model.load_state_dict(torch.load("best_model.pth", map_location=device))
-#     model.eval()
-#
-#     img_path = "C:/Users/Maja/Desktop/image1.jpg"
-#     labels = predict_image(model, img_path, mlb, device=device)
-#     print("Predykcje:", labels)

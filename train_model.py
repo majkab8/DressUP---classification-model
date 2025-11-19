@@ -1,56 +1,60 @@
 import os
-import torch
 import joblib
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MultiLabelBinarizer
+import pytorch_lightning as pl
+import torch
+from pytorch_lightning.callbacks import ModelCheckpoint
+import kagglehub
 
-from classification import (
-    load_dataset, build_labels, transform,
-    FashionDataset, main_training
+from fashion_classification import (
+    train_transform, val_test_transform, FashionDataModule, FashionClassifier
 )
 
-
 def train_model():
-    torch.multiprocessing.freeze_support()
+    path = kagglehub.dataset_download("paramaggarwal/fashion-product-images-dataset")
+    print("Path to dataset files:", path)
 
-    # Use GPU if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    dm = FashionDataModule(
+        num_classes=127,
+        batch_size=32,
+        num_workers=2,
+        pin_memory=True,
+        train_transform=train_transform,
+        val_test_transform=val_test_transform,
+        images_path=os.path.join(path, "fashion-dataset/images"),
+        labels_path=os.path.join(path, "fashion-dataset/styles.csv")
+    )
 
-    # Load dataset
-    print("Loading dataset...")
-    df, path = load_dataset()
-    df["labels"] = df.apply(build_labels, axis=1)
+    dm.setup()
+    model = FashionClassifier(num_classes=dm.num_classes, freeze_backbone=True)
 
-    # Split dataset
-    train_df, test_df = train_test_split(df, test_size=0.1, random_state=42)
-    train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42)
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_f1",
+        mode="max",
+        save_top_k=1,
+        filename="best_model",
+        save_weights_only=False
+    )
 
-    img_dir = os.path.join(path, "data")
+    trainer = pl.Trainer(
+        max_epochs=10,
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        devices=1,
+        callbacks=[checkpoint_callback],
+        log_every_n_steps=1
+    )
 
-    # Prepare labels
-    mlb = MultiLabelBinarizer()
-    mlb.fit(train_df["labels"].tolist())
+    trainer.fit(model, dm)
+    trainer.test(model, dm)
 
-    # Create datasets
-    train_dataset = FashionDataset(train_df, img_dir, transform=transform, mlb=mlb)
-    val_dataset = FashionDataset(val_df, img_dir, transform=transform, mlb=mlb)
-    test_dataset = FashionDataset(test_df, img_dir, transform=transform, mlb=mlb)
+    joblib.dump(dm.mlb, "mlb.pkl")
 
-    # Train model
-    print("Starting training...")
-    model = main_training(train_dataset, val_dataset, test_dataset, device)
+    best_ckpt_path = checkpoint_callback.best_model_path
+    best_model = FashionClassifier.load_from_checkpoint(best_ckpt_path)
 
-    # Save model and label encoder
-    torch.save(model.state_dict(), "best_model.pth")
-    joblib.dump(mlb, "mlb.pkl")
+    torch.save(best_model.state_dict(), "best_model.pth")
 
-    print("Training complete!")
-    print("Saved model as best_model.pth")
-    print("Saved label binarizer as mlb.pkl")
-
-    return model, mlb
-
+    print(f"\nZapisano najlepszy model do 'best_model.pth'")
+    print(f"Zapisano MultiLabelBinarizer do 'mlb.pkl'")
 
 if __name__ == "__main__":
     train_model()
