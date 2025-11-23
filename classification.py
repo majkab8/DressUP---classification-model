@@ -192,7 +192,7 @@ def main_training(train_dataset, val_dataset, test_dataset, device):
 
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
-            torch.save(model.state_dict(), "best_model.pth")
+            torch.save(model.state_dict(), "tagging-model.pth")
             print("Zapisano najlepszy model.")
 
     print("\nTrening zakończony.")
