@@ -4,9 +4,10 @@ import joblib
 import torch
 from PIL import Image
 import requests
-from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
-from model_utils import predict_single_image, transform
+from pydantic import BaseModel
+from typing import List
+from fastapi import FastAPI
+from model_utils import predict_single_image
 
 category_pl = {
     "tshirts": "koszulka", "shirt": "koszula", "jeans": "dżinsy",
@@ -65,19 +66,28 @@ num_classes = len(mlb.classes_)
 model_path = "tagging-model.pth"
 
 
-@app.get("/predict")
-async def predict_raw(url: str = Query(..., description="Image URL to classify")):
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        image = Image.open(io.BytesIO(response.content)).convert("RGB")
+class AiBatchRequest(BaseModel):
+    urls: List[str]
 
-        labels = predict_single_image(image, model_path, mlb, num_classes)
-        labels_pl = translate_labels(labels)
 
-        return {"labels": labels, "labels_pl": labels_pl}
+@app.post("/predict_batch")
+async def predict_batch(req: AiBatchRequest):
+    results = []
 
-    except requests.exceptions.RequestException as e:
-        return JSONResponse({"error": f"Failed to download image: {e}"}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    for url in req.urls:
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            image = Image.open(io.BytesIO(response.content)).convert("RGB")
+
+            labels = predict_single_image(image, model_path, mlb, num_classes)
+            labels_pl = translate_labels(labels)
+
+            results.append({"url": url, "tags": labels_pl})
+
+        except requests.exceptions.RequestException as e:
+            results.append({"url": url, "tags": [], "error": f"Failed to download image: {e}"})
+        except Exception as e:
+            results.append({"url": url, "tags": [], "error": str(e)})
+
+    return results
