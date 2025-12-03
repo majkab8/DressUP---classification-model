@@ -6,11 +6,14 @@ from torchvision import transforms, models
 from torchmetrics import Accuracy, F1Score
 import pandas as pd
 from PIL import Image
+from pillow_heif import register_heif_opener
 import numpy as np
 import torch.nn.functional as F
 from sklearn.preprocessing import MultiLabelBinarizer
 import pytorch_lightning as pl
 from torchvision.models import ResNet18_Weights
+
+register_heif_opener()
 
 train_transform = transforms.Compose([
     transforms.Resize((256,256)),
@@ -44,7 +47,19 @@ class FashionDataset(Dataset):
 
   def __getitem__(self, idx):
     row = self.df.iloc[idx]
-    img_path = os.path.join(self.img_dir, f"{row['id']}.jpg")
+
+    img_id = str(row['id'])
+    img_path = None
+
+    for ext in ['.jpg', '.jpeg', '.png', '.heic', '.HEIC']:
+      temp_path = os.path.join(self.img_dir, f"{img_id}{ext}")
+      if os.path.exists(temp_path):
+        img_path = temp_path
+        break
+
+    if img_path is None:
+      img_path = os.path.join(self.img_dir, f"{img_id}.jpg")
+
     img = Image.open(img_path).convert("RGB")
     img = self.transform(img)
 
@@ -68,7 +83,6 @@ class FashionDataModule(pl.LightningDataModule):
     self.labels_path = labels_path
     self.images_path = images_path
 
-
   def prepare_data(self):
     pass
 
@@ -79,42 +93,43 @@ class FashionDataModule(pl.LightningDataModule):
     exclude_classes = ["Watches", "Socks", "Shoe Accessories", "Deodorant", "Lipstick", "Briefs", "Perfume and Body Mist", "Nail Polish", "Laptop Bag", "Wallets", "Ring", "Clutches", "Earrings", "Boxers", "Jewellery Set", "Duppatta", "Lip Gloss", "Bath Robe", "Face Wash and Cleanser", "Necklace and Chains", "Foundation and Primer", "Free Gifts", "Trolley Bag", "Shoe Laces", "Fragrance Gift Set", "Baby Dolls", "Highligher and Blush", "Travel Accessory", "Mobile Pouch", "Lip Care", "Beauty Accessory", "Kajal and Eyeliner", "Water Bottle", "Lip Liner", "Stockings", "Eyeshadow", "Nail Essentials", "Face Scrub and Exfoliator", "Mask and Peel", "Wristbands", "Tablet Sleeve", "Footballs", "Hair Colour", "Concealer", "Body Lotion", "Sunscreen", "Hair Accessory", "Basketballs"]
     df = df[~df['articleType'].isin(exclude_classes)].reset_index(drop=True)
 
-    for col in ["articleType", "baseColour", "usage", "gender", "season"]:
+    for col in ["season", "baseColour", "subCategory", "articleType", "usage"]:
             if col not in df.columns:
                 df[col] = "unknown"
 
     def build_labels(row):
         labels = [
-          str(row["articleType"]).lower(),
-          str(row["baseColour"]).lower(),
-          str(row["usage"]).lower(),
-          str(row["gender"]).lower(),
           str(row["season"]).lower(),
+          str(row["baseColour"]).lower(),
+          str(row["subCategory"]).lower(),
+          str(row["articleType"]).lower(),
+          str(row["usage"]).lower()
         ]
         return list(set(labels))
 
     df["labels"] = df.apply(build_labels, axis=1)
 
-    print("\n🔍 Przykładowe etykiety multilabel:")
-    print(df[["id", "labels"]].head(10))
     df = df.head(10000)
 
-    df['img_path'] = df['id'].astype(str) + '.jpg'
-    df['exists'] = df['img_path'].apply(lambda x: os.path.exists(os.path.join(self.images_path, x)))
+    def check_file_exists(row):
+      img_id = str(row['id'])
+      for ext in ['.jpg', '.jpeg', '.png', '.heic', '.HEIC']:
+        full_path = os.path.join(self.images_path, img_id + ext)
+        if os.path.exists(full_path):
+          return True
+      return False
+
+    df['exists'] = df.apply(check_file_exists, axis=1)
     df = df[df['exists']].reset_index(drop=True)
+
     print("Pozostało obrazów:", len(df))
 
     mlb = MultiLabelBinarizer()
     label_matrix = mlb.fit_transform(df["labels"])
     df["label_vector"] = list(label_matrix)
 
-
     self.mlb = mlb
     self.num_classes = len(mlb.classes_)
-
-    print(f"🔢 Liczba unikalnych etykiet (multi-label): {self.num_classes}")
-    print("📚 Przykładowe klasy:", mlb.classes_[:15])
-
 
     train_size = int(0.8 * len(df))
     val_size = int(0.1 * len(df))
@@ -132,17 +147,16 @@ class FashionDataModule(pl.LightningDataModule):
     print(f"Długość zbioru walidacyjnego: {len(self.val_dataset)}")
     print(f"Długość zbioru testowego: {len(self.test_dataset)}")
 
-
   def train_dataloader(self):
-    train_loader = DataLoader(self.train_dataset, batch_size=32, shuffle=True,num_workers=self.num_workers, pin_memory=self.pin_memory)
+    train_loader = DataLoader(self.train_dataset, batch_size=32, shuffle=True, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
     return train_loader
 
   def val_dataloader(self):
-    val_loader = DataLoader(self.val_dataset, batch_size=32, shuffle=False,num_workers=self.num_workers, pin_memory=self.pin_memory)
+    val_loader = DataLoader(self.val_dataset, batch_size=32, shuffle=False, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
     return val_loader
 
   def test_dataloader(self):
-    test_loader = DataLoader(self.test_dataset, batch_size=32, shuffle=False,num_workers=self.num_workers, pin_memory=self.pin_memory)
+    test_loader = DataLoader(self.test_dataset, batch_size=32, shuffle=False, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
     return test_loader
 
 class FashionClassifier(pl.LightningModule):
@@ -234,7 +248,12 @@ class FashionClassifier(pl.LightningModule):
     optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
     return optimizer
 
-def predict_single_image(image, model_path, mlb, num_classes):
+def predict_single_image(image_input, model_path, mlb, num_classes):
+
+  if isinstance(image_input, str):
+    image = Image.open(image_input).convert("RGB")
+  else:
+    image = image_input.convert("RGB")
 
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
