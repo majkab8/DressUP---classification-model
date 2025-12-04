@@ -19,6 +19,7 @@ class FashionClassifierInference(nn.Module):
         super().__init__()
         self.model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
         self.backbone = nn.Sequential(*list(self.model.children())[:-1])
+        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
         self.pooling = self.model.avgpool
 
         self.fc1 = nn.Linear(512, 500)
