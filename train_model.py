@@ -32,7 +32,7 @@ def train_model():
     )
 
     dm.setup()
-    model = FashionClassifier(num_classes=dm.num_classes, freeze_backbone=True)
+    model = FashionClassifier(num_classes=dm.num_classes, freeze_backbone=False)
 
     checkpoint_callback = ModelCheckpoint(
         monitor="val_f1",

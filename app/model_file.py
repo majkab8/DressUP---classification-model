@@ -15,7 +15,7 @@ transform = transforms.Compose([
 
 
 class FashionClassifierInference(nn.Module):
-    def __init__(self, num_classes, freeze_backbone=True):
+    def __init__(self, num_classes, freeze_backbone=False):
         super().__init__()
         self.model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
         self.backbone = nn.Sequential(*list(self.model.children())[:-1])
@@ -28,21 +28,22 @@ class FashionClassifierInference(nn.Module):
         if freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
+        else:
+            for param in self.backbone.parameters():
+                param.requires_grad = True
 
     def forward(self, x):
-        with torch.no_grad():
-            x = self.backbone(x)
-            x = self.pooling(x).flatten(1)
+        x = self.backbone(x)
+        x = self.pooling(x).flatten(1)
         x = self.fc1(x)
         x = F.relu(x)
         x = self.fc2(x)
         return x
 
-
 class FashionModel:
     _instance = None
 
-    def __new__(cls, model_path, mlb, num_classes, threshold=0.3):
+    def __new__(cls, model_path, mlb, num_classes, threshold=0.5):
         if cls._instance is None:
             cls._instance = super(FashionModel, cls).__new__(cls)
             cls._instance._init(model_path, mlb, num_classes, threshold)
@@ -54,7 +55,7 @@ class FashionModel:
         self.threshold = threshold
         self.mlb = mlb
 
-        self.model = FashionClassifierInference(num_classes=num_classes)
+        self.model = FashionClassifierInference(num_classes=num_classes, freeze_backbone=False)
         state_dict = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)

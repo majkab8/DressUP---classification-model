@@ -109,7 +109,7 @@ class FashionDataModule(pl.LightningDataModule):
 
     df["labels"] = df.apply(build_labels, axis=1)
 
-    df = df.head(10000)
+    #df = df.head(10000)
 
     def check_file_exists(row):
       img_id = str(row['id'])
@@ -160,7 +160,7 @@ class FashionDataModule(pl.LightningDataModule):
     return test_loader
 
 class FashionClassifier(pl.LightningModule):
-  def __init__(self, num_classes, freeze_backbone=True):
+  def __init__(self, num_classes, freeze_backbone=False):
     super().__init__()
     self.save_hyperparameters()
     self.model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
@@ -178,15 +178,15 @@ class FashionClassifier(pl.LightningModule):
     if freeze_backbone:
       for param in self.backbone.parameters():
         param.requires_grad = False
+    else:
+      for param in self.backbone.parameters():
+        param.requires_grad = True
 
     self.examples_for_display = []
 
   def forward(self, x):
-      self.backbone.eval()
-      with torch.no_grad():
-          x = self.backbone(x)
-          x = self.pooling(x).flatten(1)
-
+      x = self.backbone(x)
+      x = self.pooling(x).flatten(1)
       x = self.fc1(x)
       x = F.relu(x)
       x = self.fc2(x)
@@ -257,7 +257,7 @@ def predict_single_image(image_input, model_path, mlb, num_classes):
 
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-  model = FashionClassifier(num_classes=num_classes)
+  model = FashionClassifier(num_classes=num_classes, freeze_backbone=False)
   state_dict = torch.load(model_path, map_location=device)
   model.load_state_dict(state_dict)
   model.to(device)
@@ -269,7 +269,7 @@ def predict_single_image(image_input, model_path, mlb, num_classes):
     logits = model(img_tensor)
     probs = torch.sigmoid(logits).cpu().numpy()[0]
 
-  threshold = 0.3
+  threshold = 0.5
   labels = [cls for cls, p in zip(mlb.classes_, probs) if p > threshold]
 
   return labels
