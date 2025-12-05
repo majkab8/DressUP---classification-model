@@ -43,7 +43,7 @@ def train_model():
     )
 
     trainer = pl.Trainer(
-        max_epochs=20,
+        max_epochs=6,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
         callbacks=[checkpoint_callback],
