@@ -269,7 +269,7 @@ def predict_single_image(image_input, model_path, mlb, num_classes):
     logits = model(img_tensor)
     probs = torch.sigmoid(logits).cpu().numpy()[0]
 
-  threshold = 0.5
+  threshold = 0.35
   labels = [cls for cls, p in zip(mlb.classes_, probs) if p > threshold]
 
   return labels

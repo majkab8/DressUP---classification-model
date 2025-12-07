@@ -43,7 +43,7 @@ class FashionClassifierInference(nn.Module):
 class FashionModel:
     _instance = None
 
-    def __new__(cls, model_path, mlb, num_classes, threshold=0.5):
+    def __new__(cls, model_path, mlb, num_classes, threshold=0.35):
         if cls._instance is None:
             cls._instance = super(FashionModel, cls).__new__(cls)
             cls._instance._init(model_path, mlb, num_classes, threshold)
