@@ -13,49 +13,52 @@ transform = transforms.Compose([
                          std=[0.229, 0.224, 0.225])
 ])
 
-
 class FashionClassifierInference(nn.Module):
-    def __init__(self, num_classes, freeze_backbone=False):
+    def __init__(self, num_classes_dict):
         super().__init__()
-        self.model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-        self.backbone = nn.Sequential(*list(self.model.children())[:-1])
-        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
-        self.pooling = self.model.avgpool
+        resnet = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+        self.backbone = nn.Sequential(*list(resnet.children())[:-1])
+        embedding_size = resnet.fc.in_features
+        self.fc_shared = nn.Sequential(
+            nn.Linear(embedding_size, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3)
+        )
 
-        self.fc1 = nn.Linear(512, 500)
-        self.fc2 = nn.Linear(500, num_classes)
-
-        if freeze_backbone:
-            for param in self.backbone.parameters():
-                param.requires_grad = False
-        else:
-            for param in self.backbone.parameters():
-                param.requires_grad = True
+        self.head_type = nn.Linear(512, num_classes_dict['type'])
+        self.head_color = nn.Linear(512, num_classes_dict['color'])
+        self.head_usage = nn.Linear(512, num_classes_dict['usage'])
+        self.head_season = nn.Linear(512, num_classes_dict['season'])
 
     def forward(self, x):
         x = self.backbone(x)
-        x = self.pooling(x).flatten(1)
-        x = self.fc1(x)
-        x = F.relu(x)
-        x = self.fc2(x)
-        return x
+        x = torch.flatten(x, 1)
+        x = F.relu(self.fc_shared(x))
+
+        return self.head_type(x), self.head_color(x), self.head_usage(x), self.head_season(x)
 
 class FashionModel:
     _instance = None
 
-    def __new__(cls, model_path, mlb, num_classes, threshold=0.35):
+    def __new__(cls, model_path, encoders):
         if cls._instance is None:
             cls._instance = super(FashionModel, cls).__new__(cls)
-            cls._instance._init(model_path, mlb, num_classes, threshold)
+            cls._instance._init(model_path, encoders)
         return cls._instance
 
-    def _init(self, model_path, mlb, num_classes, threshold):
+    def _init(self, model_path, encoders):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.num_classes = num_classes
-        self.threshold = threshold
-        self.mlb = mlb
+        self.encoders = encoders
 
-        self.model = FashionClassifierInference(num_classes=num_classes, freeze_backbone=False)
+        self.num_classes_dict = {
+            'type': len(encoders['type'].classes_),
+            'color': len(encoders['color'].classes_),
+            'usage': len(encoders['usage'].classes_),
+            'season': len(encoders['season'].classes_)
+        }
+
+        self.model = FashionClassifierInference(num_classes_dict=self.num_classes_dict)
+
         state_dict = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)
@@ -70,8 +73,18 @@ class FashionModel:
         img_tensor = transform(image).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            logits = self.model(img_tensor)
-            probs = torch.sigmoid(logits).cpu().numpy()[0]
+            o_type, o_color, o_usage, o_season = self.model(img_tensor)
 
-        labels = [cls for cls, p in zip(self.mlb.classes_, probs) if p > self.threshold]
-        return labels
+            pred_type_idx = torch.argmax(o_type, dim=1).item()
+            pred_color_idx = torch.argmax(o_color, dim=1).item()
+            pred_usage_idx = torch.argmax(o_usage, dim=1).item()
+            pred_season_idx = torch.argmax(o_season, dim=1).item()
+
+        results = {
+            "type": self.encoders['type'].inverse_transform([pred_type_idx])[0],
+            "color": self.encoders['color'].inverse_transform([pred_color_idx])[0],
+            "usage": self.encoders['usage'].inverse_transform([pred_usage_idx])[0],
+            "season": self.encoders['season'].inverse_transform([pred_season_idx])[0]
+        }
+
+        return results

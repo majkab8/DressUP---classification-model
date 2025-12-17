@@ -3,21 +3,23 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
-from torchmetrics import Accuracy, F1Score
 import pandas as pd
 from PIL import Image
 from pillow_heif import register_heif_opener
 import numpy as np
 import torch.nn.functional as F
-from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.preprocessing import LabelEncoder
 import pytorch_lightning as pl
 from torchvision.models import ResNet18_Weights
+import matplotlib.pyplot as plt
+import joblib
+
 
 register_heif_opener()
 
 train_transform = transforms.Compose([
     transforms.Resize((256,256)),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.0),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -36,10 +38,11 @@ transform = transforms.Compose([
 ])
 
 class FashionDataset(Dataset):
-  def __init__(self, *, df, img_dir, transforms, is_test=False):
+  def __init__(self, df, img_dir, transforms, encoders, is_test=False):
     self.df = df
     self.img_dir = img_dir
     self.transform = transforms
+    self.encoders = encoders
     self.is_test = is_test
 
   def __len__(self):
@@ -63,53 +66,41 @@ class FashionDataset(Dataset):
     img = Image.open(img_path).convert("RGB")
     img = self.transform(img)
 
-    label_vector = torch.tensor(row.get("label_vector", [0] * self.df.shape[1]), dtype=torch.float32)
+    target_type = torch.tensor(self.encoders['type'].transform([row['articleType']])[0], dtype=torch.long)
+    target_color = torch.tensor(self.encoders['color'].transform([row['baseColour']])[0], dtype=torch.long)
+    target_usage = torch.tensor(self.encoders['usage'].transform([row['usage']])[0], dtype=torch.long)
+    target_season = torch.tensor(self.encoders['season'].transform([row['season']])[0], dtype=torch.long)
+
 
     if self.is_test:
-      return img, label_vector, img_path
+      return img, target_type, target_color, target_usage, target_season, img_path
     else:
-      return img, label_vector
+      return img, target_type, target_color, target_usage, target_season
 
 class FashionDataModule(pl.LightningDataModule):
-  def __init__(self, *, num_classes, batch_size=32, num_workers=0, pin_memory=False, train_transform, val_test_transform, images_path, labels_path):
+  def __init__(self, batch_size=32, num_workers=0, train_transform=train_transform, val_test_transform=val_test_transform, images_path=None, labels_path=None):
     super().__init__()
-
-    self.num_classes = num_classes
     self.batch_size = batch_size
     self.num_workers = num_workers
-    self.pin_memory = pin_memory
     self.train_transform = train_transform
     self.val_test_transform = val_test_transform
-    self.labels_path = labels_path
     self.images_path = images_path
-
-  def prepare_data(self):
-    pass
+    self.labels_path = labels_path
+    self.pin_memory = True
+    self.encoders = {}
+    self.num_classes = {}
 
   def setup(self, stage=None):
     np.random.seed(42)
     df = pd.read_csv(self.labels_path, on_bad_lines='skip')
     df = df.dropna(subset=['id', 'articleType'])
-    exclude_classes = ["Watches", "Socks", "Shoe Accessories", "Deodorant", "Lipstick", "Briefs", "Perfume and Body Mist", "Nail Polish", "Laptop Bag", "Wallets", "Ring", "Clutches", "Earrings", "Boxers", "Jewellery Set", "Duppatta", "Lip Gloss", "Bath Robe", "Face Wash and Cleanser", "Necklace and Chains", "Foundation and Primer", "Free Gifts", "Trolley Bag", "Shoe Laces", "Fragrance Gift Set", "Baby Dolls", "Highligher and Blush", "Travel Accessory", "Mobile Pouch", "Lip Care", "Beauty Accessory", "Kajal and Eyeliner", "Water Bottle", "Lip Liner", "Stockings", "Eyeshadow", "Nail Essentials", "Face Scrub and Exfoliator", "Mask and Peel", "Wristbands", "Tablet Sleeve", "Footballs", "Hair Colour", "Concealer", "Body Lotion", "Sunscreen", "Hair Accessory", "Basketballs"]
+    exclude_classes = ["Watches", "Socks", "Shoe Accessories", "Deodorant", "Lipstick", "Briefs", "Perfume and Body Mist", "Nail Polish", "Laptop Bag", "Wallets", "Ring", "Clutches", "Earrings", "Boxers", "Jewellery Set", "Duppatta", "Lip Gloss", "Bath Robe", "Face Wash and Cleanser", "Necklace and Chains", "Foundation and Primer", "Free Gifts", "Trolley Bag", "Shoe Laces", "Fragrance Gift Set", "Baby Dolls", "Highligher and Blush", "Travel Accessory", "Mobile Pouch", "Lip Care", "Beauty Accessory", "Kajal and Eyeliner", "Water Bottle", "Lip Liner", "Stockings", "Eyeshadow", "Nail Essentials", "Face Scrub and Exfoliator", "Mask and Peel", "Wristbands", "Tablet Sleeve", "Footballs", "Hair Colour", "Concealer", "Body Lotion", "Sunscreen", "Hair Accessory", "Basketballs", "Bags", "Handbags"]
     df = df[~df['articleType'].isin(exclude_classes)].reset_index(drop=True)
 
     for col in ["season", "baseColour", "subCategory", "articleType", "usage"]:
             if col not in df.columns:
                 df[col] = "unknown"
-
-    def build_labels(row):
-        labels = [
-          str(row["season"]).lower(),
-          str(row["baseColour"]).lower(),
-          str(row["subCategory"]).lower(),
-          str(row["articleType"]).lower(),
-          str(row["usage"]).lower()
-        ]
-        return list(set(labels))
-
-    df["labels"] = df.apply(build_labels, axis=1)
-
-    #df = df.head(10000)
+            df[col] = df[col].astype(str).str.lower()
 
     def check_file_exists(row):
       img_id = str(row['id'])
@@ -122,14 +113,16 @@ class FashionDataModule(pl.LightningDataModule):
     df['exists'] = df.apply(check_file_exists, axis=1)
     df = df[df['exists']].reset_index(drop=True)
 
-    print("Pozostało obrazów:", len(df))
+    self.encoders['type'] = LabelEncoder().fit(df['articleType'])
+    self.encoders['color'] = LabelEncoder().fit(df['baseColour'])
+    self.encoders['usage'] = LabelEncoder().fit(df['usage'])
+    self.encoders['season'] = LabelEncoder().fit(df['season'])
 
-    mlb = MultiLabelBinarizer()
-    label_matrix = mlb.fit_transform(df["labels"])
-    df["label_vector"] = list(label_matrix)
+    self.num_classes['type'] = len(self.encoders['type'].classes_)
+    self.num_classes['color'] = len(self.encoders['color'].classes_)
+    self.num_classes['usage'] = len(self.encoders['usage'].classes_)
+    self.num_classes['season'] = len(self.encoders['season'].classes_)
 
-    self.mlb = mlb
-    self.num_classes = len(mlb.classes_)
 
     train_size = int(0.8 * len(df))
     val_size = int(0.1 * len(df))
@@ -138,138 +131,179 @@ class FashionDataModule(pl.LightningDataModule):
     val_df = df.iloc[train_size:train_size + val_size].reset_index(drop=True)
     test_df = df[train_size + val_size:].reset_index(drop=True)
 
-    self.train_dataset = FashionDataset(df=train_df, img_dir=self.images_path, transforms=self.train_transform, is_test=False)
-    self.val_dataset = FashionDataset(df=val_df, img_dir=self.images_path, transforms=self.val_test_transform, is_test=False)
-    self.test_dataset = FashionDataset(df=test_df, img_dir=self.images_path, transforms=self.val_test_transform, is_test=True)
-
-    print(f"Długość całego zbioru: {len(df)}")
-    print(f"Długość zbioru treningowego: {len(self.train_dataset)}")
-    print(f"Długość zbioru walidacyjnego: {len(self.val_dataset)}")
-    print(f"Długość zbioru testowego: {len(self.test_dataset)}")
+    self.train_dataset = FashionDataset(df=train_df, img_dir=self.images_path, transforms=self.train_transform, encoders=self.encoders, is_test=False)
+    self.val_dataset = FashionDataset(df=val_df, img_dir=self.images_path, transforms=self.val_test_transform, encoders=self.encoders, is_test=False)
+    self.test_dataset = FashionDataset(df=test_df, img_dir=self.images_path, transforms=self.val_test_transform, encoders=self.encoders, is_test=True)
 
   def train_dataloader(self):
-    train_loader = DataLoader(self.train_dataset, batch_size=32, shuffle=True, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
+    train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
     return train_loader
 
   def val_dataloader(self):
-    val_loader = DataLoader(self.val_dataset, batch_size=32, shuffle=False, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
+    val_loader = DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
     return val_loader
 
   def test_dataloader(self):
-    test_loader = DataLoader(self.test_dataset, batch_size=32, shuffle=False, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
+    test_loader = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=True)
     return test_loader
 
 class FashionClassifier(pl.LightningModule):
-  def __init__(self, num_classes, freeze_backbone=False):
+  def __init__(self, num_classes_dict, freeze_backbone=False):
     super().__init__()
     self.save_hyperparameters()
-    self.model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-    self.backbone = nn.Sequential(*list(self.model.children())[:-1])
-    self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
-    self.criterion = nn.BCEWithLogitsLoss()
-    self.accuracy = Accuracy(task="multilabel", num_labels=num_classes, threshold=0.5)
-    self.f1 = F1Score(task="multilabel", num_labels=num_classes, threshold=0.5)
+    resnet = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+    self.backbone = nn.Sequential(*list(resnet.children())[:-1])
+    embedding_size = resnet.fc.in_features
+    self.fc_shared = nn.Sequential(
+        nn.Linear(embedding_size, 512),
+        nn.ReLU(),
+        nn.Dropout(p=0.3)
+    )
+    self.criterion = nn.CrossEntropyLoss()
 
-    self.pooling = self.model.avgpool
 
-    self.fc1 = nn.Linear(512, 500)
-    self.fc2 = nn.Linear(500, num_classes)
+    self.head_type = nn.Linear(512, num_classes_dict['type'])
+    self.head_color = nn.Linear(512, num_classes_dict['color'])
+    self.head_usage = nn.Linear(512, num_classes_dict['usage'])
+    self.head_season = nn.Linear(512, num_classes_dict['season'])
 
     if freeze_backbone:
       for param in self.backbone.parameters():
         param.requires_grad = False
-    else:
-      for param in self.backbone.parameters():
-        param.requires_grad = True
-
-    self.examples_for_display = []
 
   def forward(self, x):
       x = self.backbone(x)
-      x = self.pooling(x).flatten(1)
-      x = self.fc1(x)
-      x = F.relu(x)
-      x = self.fc2(x)
-      return x
+      x = torch.flatten(x, 1)
+      x = F.relu(self.fc_shared(x))
+
+      out_type = self.head_type(x)
+      out_color = self.head_color(x)
+      out_usage = self.head_usage(x)
+      out_season = self.head_season(x)
+
+      return out_type, out_color, out_usage, out_season
+
+  def metrics_calculator(self, outputs, targets, mode='train'):
+
+    output_type, output_color, output_usage, output_season = outputs
+    target_type, target_color, target_usage, target_season = targets
+
+    loss_type = self.criterion(output_type, target_type)
+    loss_color = self.criterion(output_color, target_color)
+    loss_usage = self.criterion(output_usage, target_usage)
+    loss_season = self.criterion(output_season, target_season)
+    total = loss_type + loss_color + loss_usage + loss_season
+
+    acc_type = (output_type.argmax(dim=1) == target_type).float().mean()
+    acc_color = (output_color.argmax(dim=1) == target_color).float().mean()
+    acc_usage = (output_usage.argmax(dim=1) == target_usage).float().mean()
+    acc_season = (output_season.argmax(dim=1) == target_season).float().mean()
+
+    self.log(f'{mode}_loss', total, prog_bar=True)
+    self.log(f'{mode}_acc_type', acc_type, prog_bar=True)
+    self.log(f'{mode}_acc_color', acc_color, prog_bar=True)
+    self.log(f'{mode}_acc_usage', acc_usage, prog_bar=True)
+    self.log(f'{mode}_acc_season', acc_season, prog_bar=True)
+
+    return total
 
   def training_step(self, batch, batch_idx):
-    x, y = batch
-    logits = self(x)
-    loss = self.criterion(logits, y)
-    preds = torch.sigmoid(logits)
+    img, train_type, train_color, train_usage, train_season = batch
+    outputs = self(img)
 
-    acc = self.accuracy(preds, y)
-    f1 = self.f1(preds, y)
-    self.log('train_loss', loss, prog_bar=True)
-    self.log('train_acc', acc, prog_bar=True)
-    self.log('train_f1', f1, prog_bar=True)
-    return loss
+    return self.metrics_calculator(outputs, (train_type, train_color, train_usage, train_season), mode='train')
 
   def validation_step(self, batch, batch_idx):
-    x, y = batch
-    logits = self(x)
-    val_loss = self.criterion(logits, y)
-    preds = torch.sigmoid(logits)
+    img, train_type, train_color, train_usage, train_season = batch
+    outputs = self(img)
 
-    val_acc = self.accuracy(preds, y)
-    val_f1 = self.f1(preds, y)
-    self.log('val_loss', val_loss, prog_bar=True)
-    self.log('val_acc', val_acc, prog_bar=True)
-    self.log('val_f1', val_f1, prog_bar=True)
-    return val_loss
+    return self.metrics_calculator(outputs, (train_type, train_color, train_usage, train_season), mode='val')
 
   def test_step(self, batch, batch_idx):
-    x, y, paths = batch # usunac paths jesli nie chce wypisac
-    logits = self(x)
-    test_loss = self.criterion(logits, y)
-    preds = torch.sigmoid(logits)
+    img, train_type, train_color, train_usage, train_season, paths = batch
+    outputs = self(img)
 
-    test_acc = self.accuracy(preds, y)
-    test_f1 = self.f1(preds, y)
-    self.log('test_loss', test_loss, prog_bar=True)
-    self.log('test_acc', test_acc, prog_bar=True)
-    self.log('test_f1', test_f1, prog_bar=True)
-
-    if len(self.examples_for_display) < 10: # usunac tego ifa jesli nie chce wypisywac
-      preds_np = preds.cpu().numpy()
-      y_np = y.cpu().numpy()
-      for i in range(len(x)):
-        if len(self.examples_for_display) >= 10:
-          break
-        self.examples_for_display.append({
-          "image": paths[i],
-          "true": y_np[i],
-          "pred": preds_np[i]
-        })
-
-    return test_loss
+    return self.metrics_calculator(outputs, (train_type, train_color, train_usage, train_season), mode='test')
 
   def configure_optimizers(self):
-    optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, weight_decay=1e-4)
     return optimizer
 
-def predict_single_image(image_input, model_path, mlb, num_classes):
+def plot_model_results(log_dir):
+  metrics_path = os.path.join(log_dir, "metrics.csv")
+  if not os.path.exists(metrics_path):
+    print("Brak pliku metrics.csv")
+    return
+
+  metrics = pd.read_csv(metrics_path)
+
+  epoch_metrics = metrics.groupby("epoch").mean(numeric_only=True)
+
+  fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+  fig.suptitle('Dokładność (Accuracy) dla poszczególnych cech', fontsize=16)
+
+  heads = [
+    ('type', 'Typ Ubrania', axes[0, 0]),
+    ('color', 'Kolor', axes[0, 1]),
+    ('usage', 'Okazja', axes[1, 0]),
+    ('season', 'Sezon', axes[1, 1])
+  ]
+
+  for key, title, ax in heads:
+    train_key = f'train_acc_{key}'
+    val_key = f'val_acc_{key}'
+
+    if train_key in epoch_metrics:
+      ax.plot(epoch_metrics.index, epoch_metrics[train_key], label='Train', marker='.')
+
+    if val_key in epoch_metrics:
+      ax.plot(epoch_metrics.index, epoch_metrics[val_key], label='Val', marker='.')
+
+    ax.set_title(title)
+    ax.set_xlabel('Epoka')
+    ax.set_ylabel('Accuracy')
+    ax.set_ylim([0, 1.0])
+    ax.grid(True)
+    ax.legend()
+
+  plt.tight_layout()
+  plt.savefig("multihead_training_results.png")
+  print("Zapisano wykresy do 'multihead_training_results.png'")
+  plt.show()
+
+
+def predict_single_image(image_input, model_path="best_model.pth", encoders_path="encoders.pkl"):
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+  encoders = joblib.load(encoders_path)
+  num_classes = {k: len(v.classes_) for k, v in encoders.items()}
+
+  model = FashionClassifier(num_classes_dict=num_classes)
+  state_dict = torch.load(model_path, map_location=device)
+  model.load_state_dict(state_dict)
+  model.to(device)
+  model.eval()
 
   if isinstance(image_input, str):
     image = Image.open(image_input).convert("RGB")
   else:
     image = image_input.convert("RGB")
 
-  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-  model = FashionClassifier(num_classes=num_classes, freeze_backbone=False)
-  state_dict = torch.load(model_path, map_location=device)
-  model.load_state_dict(state_dict)
-  model.to(device)
-  model.eval()
-
+  transform = val_test_transform
   img_tensor = transform(image).unsqueeze(0).to(device)
 
   with torch.no_grad():
-    logits = model(img_tensor)
-    probs = torch.sigmoid(logits).cpu().numpy()[0]
+    o_type, o_color, o_usage, o_season = model(img_tensor)
 
-  threshold = 0.35
-  labels = [cls for cls, p in zip(mlb.classes_, probs) if p > threshold]
+    pred_type = torch.argmax(o_type, dim=1).item()
+    pred_color = torch.argmax(o_color, dim=1).item()
+    pred_usage = torch.argmax(o_usage, dim=1).item()
+    pred_season = torch.argmax(o_season, dim=1).item()
 
-  return labels
+  results = {
+    "Type": encoders['type'].inverse_transform([pred_type])[0],
+    "Color": encoders['color'].inverse_transform([pred_color])[0],
+    "Usage": encoders['usage'].inverse_transform([pred_usage])[0],
+    "Season": encoders['season'].inverse_transform([pred_season])[0]
+  }
+  return results

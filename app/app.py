@@ -11,15 +11,13 @@ from model_file import FashionModel
 app = FastAPI()
 
 model_path = "best_model.pth"
-mlb_path = "mlb.pkl"
+encoders_path = "encoders.pkl"
 
-mlb = joblib.load(mlb_path)
-fashion_model = FashionModel(model_path="tagging_model.pth", mlb=mlb, num_classes=len(mlb.classes_))
-
+encoders = joblib.load(encoders_path)
+fashion_model = FashionModel(model_path=model_path, encoders=encoders)
 
 class AiBatchRequest(BaseModel):
     urls: List[str]
-
 
 @app.post("/predict_batch")
 async def predict_batch(req: AiBatchRequest):
@@ -31,13 +29,24 @@ async def predict_batch(req: AiBatchRequest):
             response.raise_for_status()
             image = Image.open(io.BytesIO(response.content)).convert("RGB")
 
-            labels_eng = fashion_model.predict(image)
+            labels_dict = fashion_model.predict(image)
 
-            results.append({"url": url, "tags": labels_eng})
+            results.append({
+                "url": url,
+                "tags": labels_dict
+            })
 
         except requests.exceptions.RequestException as e:
-            results.append({"url": url, "tags": [], "error": f"Failed to download image: {e}"})
+            results.append({
+                "url": url,
+                "tags": {},
+                "error": f"Failed to download image: {e}"
+            })
         except Exception as e:
-            results.append({"url": url, "tags": [], "error": str(e)})
+            results.append({
+                "url": url,
+                "tags": {},
+                "error": str(e)
+            })
 
     return {"results": results}
