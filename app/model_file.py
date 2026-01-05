@@ -3,8 +3,6 @@ from torch import nn
 from torchvision import transforms, models
 from torchvision.models import ResNet18_Weights
 from PIL import Image
-import torch.nn.functional as F
-
 
 transform = transforms.Compose([
     transforms.Resize((256, 256)),
@@ -16,13 +14,17 @@ transform = transforms.Compose([
 class FashionClassifierInference(nn.Module):
     def __init__(self, num_classes_dict):
         super().__init__()
-        resnet = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-        self.backbone = nn.Sequential(*list(resnet.children())[:-1])
-        embedding_size = resnet.fc.in_features
+        effnet = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+        self.backbone = nn.Sequential(
+            effnet.features,
+            effnet.avgpool
+        )
+        embedding_size = effnet.classifier[1].in_features
         self.fc_shared = nn.Sequential(
+            nn.Flatten(),
             nn.Linear(embedding_size, 512),
             nn.ReLU(),
-            nn.Dropout(0.3)
+            nn.Dropout(0.5)
         )
 
         self.head_type = nn.Linear(512, num_classes_dict['type'])
@@ -32,8 +34,7 @@ class FashionClassifierInference(nn.Module):
 
     def forward(self, x):
         x = self.backbone(x)
-        x = torch.flatten(x, 1)
-        x = F.relu(self.fc_shared(x))
+        x = self.fc_shared(x)
 
         return self.head_type(x), self.head_color(x), self.head_usage(x), self.head_season(x)
 

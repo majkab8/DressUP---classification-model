@@ -1,13 +1,13 @@
 import os
 import torch
+from sklearn.metrics import ConfusionMatrixDisplay
+from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 import pandas as pd
 from PIL import Image
 from pillow_heif import register_heif_opener
-import numpy as np
-import torch.nn.functional as F
 from sklearn.preprocessing import LabelEncoder
 import pytorch_lightning as pl
 from torchvision.models import ResNet18_Weights
@@ -19,7 +19,7 @@ register_heif_opener()
 
 train_transform = transforms.Compose([
     transforms.Resize((256,256)),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.0),
+    transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.0),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -91,11 +91,21 @@ class FashionDataModule(pl.LightningDataModule):
     self.num_classes = {}
 
   def setup(self, stage=None):
-    np.random.seed(42)
     df = pd.read_csv(self.labels_path, on_bad_lines='skip')
-    df = df.dropna(subset=['id', 'articleType'])
-    exclude_classes = ["Watches", "Socks", "Shoe Accessories", "Deodorant", "Lipstick", "Briefs", "Perfume and Body Mist", "Nail Polish", "Laptop Bag", "Wallets", "Ring", "Clutches", "Earrings", "Boxers", "Jewellery Set", "Duppatta", "Lip Gloss", "Bath Robe", "Face Wash and Cleanser", "Necklace and Chains", "Foundation and Primer", "Free Gifts", "Trolley Bag", "Shoe Laces", "Fragrance Gift Set", "Baby Dolls", "Highligher and Blush", "Travel Accessory", "Mobile Pouch", "Lip Care", "Beauty Accessory", "Kajal and Eyeliner", "Water Bottle", "Lip Liner", "Stockings", "Eyeshadow", "Nail Essentials", "Face Scrub and Exfoliator", "Mask and Peel", "Wristbands", "Tablet Sleeve", "Footballs", "Hair Colour", "Concealer", "Body Lotion", "Sunscreen", "Hair Accessory", "Basketballs", "Bags", "Handbags"]
-    df = df[~df['articleType'].isin(exclude_classes)].reset_index(drop=True)
+    important_cols = ['id', 'articleType', 'masterCategory', 'baseColour', 'gender']
+    df = df.dropna(subset=important_cols).reset_index(drop=True)
+
+    allowed_categories = ['Apparel', 'Footwear']
+    df = df[df['masterCategory'].isin(allowed_categories)]
+    exclude_classes = [
+      "Socks", "Shoe Accessories", "Shoe Laces",
+      "Innerwear Vests", "Trunk", "Boxers", "Briefs", "Bath Robe"
+    ]
+    df = df[~df['articleType'].isin(exclude_classes)]
+
+    class_counts = df['articleType'].value_counts()
+    valid_classes = class_counts[class_counts >= 60].index
+    df = df[df['articleType'].isin(valid_classes)].reset_index(drop=True)
 
     for col in ["season", "baseColour", "subCategory", "articleType", "usage"]:
             if col not in df.columns:
@@ -123,13 +133,25 @@ class FashionDataModule(pl.LightningDataModule):
     self.num_classes['usage'] = len(self.encoders['usage'].classes_)
     self.num_classes['season'] = len(self.encoders['season'].classes_)
 
+    train_df, rest_df = train_test_split(
+      df,
+      train_size=0.8,
+      shuffle=True,
+      random_state=42,
+      stratify=df['articleType']
+    )
 
-    train_size = int(0.8 * len(df))
-    val_size = int(0.1 * len(df))
+    val_df, test_df = train_test_split(
+      rest_df,
+      test_size=0.5,
+      shuffle=True,
+      random_state=42,
+      stratify=rest_df['articleType']
+    )
 
-    train_df = df.iloc[:train_size].reset_index(drop=True)
-    val_df = df.iloc[train_size:train_size + val_size].reset_index(drop=True)
-    test_df = df[train_size + val_size:].reset_index(drop=True)
+    train_df = train_df.reset_index(drop=True)
+    val_df = val_df.reset_index(drop=True)
+    test_df = test_df.reset_index(drop=True)
 
     self.train_dataset = FashionDataset(df=train_df, img_dir=self.images_path, transforms=self.train_transform, encoders=self.encoders, is_test=False)
     self.val_dataset = FashionDataset(df=val_df, img_dir=self.images_path, transforms=self.val_test_transform, encoders=self.encoders, is_test=False)
@@ -151,13 +173,18 @@ class FashionClassifier(pl.LightningModule):
   def __init__(self, num_classes_dict, freeze_backbone=False):
     super().__init__()
     self.save_hyperparameters()
-    resnet = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-    self.backbone = nn.Sequential(*list(resnet.children())[:-1])
-    embedding_size = resnet.fc.in_features
+    effnet = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+    self.backbone = nn.Sequential(
+      effnet.features,
+      effnet.avgpool
+    )
+    embedding_size = effnet.classifier[1].in_features
+
     self.fc_shared = nn.Sequential(
-        nn.Linear(embedding_size, 512),
-        nn.ReLU(),
-        nn.Dropout(p=0.3)
+      nn.Flatten(),
+      nn.Linear(embedding_size, 512),
+      nn.ReLU(),
+      nn.Dropout(p=0.5)
     )
     self.criterion = nn.CrossEntropyLoss()
 
@@ -173,8 +200,7 @@ class FashionClassifier(pl.LightningModule):
 
   def forward(self, x):
       x = self.backbone(x)
-      x = torch.flatten(x, 1)
-      x = F.relu(self.fc_shared(x))
+      x = self.fc_shared(x)
 
       out_type = self.head_type(x)
       out_color = self.head_color(x)
@@ -268,7 +294,49 @@ def plot_model_results(log_dir):
 
   plt.tight_layout()
   plt.savefig("multihead_training_results.png")
-  print("Zapisano wykresy do 'multihead_training_results.png'")
+  plt.show()
+
+def plot_confusion_matrix(model, datamodule):
+
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  model.to(device)
+  model.eval()
+
+  y_true = []
+  y_pred = []
+
+  loader = datamodule.test_dataloader()
+
+  with torch.no_grad():
+    for batch in loader:
+      if len(batch) == 6:
+        imgs, true_type, *reszta = batch
+      else:
+        imgs, true_type, *reszta = batch
+
+      out_type, _, _, _ = model(imgs.to(device))
+      preds = out_type.argmax(dim=1).cpu().numpy()
+
+      y_true.extend(true_type.numpy())
+      y_pred.extend(preds)
+
+  class_names = datamodule.encoders['type'].classes_
+
+  fig, ax = plt.subplots(figsize=(16, 16))
+
+  disp = ConfusionMatrixDisplay.from_predictions(
+    y_true,
+    y_pred,
+    display_labels=class_names,
+    cmap='Blues',
+    ax=ax,
+    xticks_rotation='vertical'
+  )
+
+  disp.ax_.set_title("Confusion matrix")
+
+  plt.tight_layout()
+  plt.savefig("confusion_matrix.png")
   plt.show()
 
 

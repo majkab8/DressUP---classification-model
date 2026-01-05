@@ -7,7 +7,7 @@ from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from fashion_classification import (
-    FashionDataModule, FashionClassifier, plot_model_results
+    FashionDataModule, FashionClassifier, plot_model_results, plot_confusion_matrix
 )
 
 torch.set_float32_matmul_precision('medium')
@@ -55,7 +55,14 @@ def train_model():
     trainer.test(model, dm)
 
     plot_model_results(logger.log_dir)
-    torch.save(model.state_dict(), "best_model.pth")
+    plot_confusion_matrix(model, dm)
+
+    best_model = FashionClassifier.load_from_checkpoint(
+        checkpoint_callback.best_model_path,
+        num_classes_dict=dm.num_classes
+    )
+
+    torch.save(best_model.state_dict(), "best_model.pth")
     joblib.dump(dm.encoders, "encoders.pkl")
 
 if __name__ == "__main__":
