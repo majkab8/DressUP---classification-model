@@ -1,0 +1,98 @@
+--- Category: TYPE (32 tags) ---
+- bra
+- capris
+- casual shoes
+- dresses
+- dupatta
+- flats
+- flip flops
+- formal shoes
+- heels
+- jackets
+- jeans
+- kurta sets
+- kurtas
+- kurtis
+- leggings
+- lounge pants
+- night suits
+- nightdress
+- sandals
+- sarees
+- shirts
+- shorts
+- skirts
+- sports sandals
+- sports shoes
+- sweaters
+- sweatshirts
+- tops
+- track pants
+- trousers
+- tshirts
+- tunics
+
+--- Category: COLOR (45 tags) ---
+- beige
+- black
+- blue
+- bronze
+- brown
+- burgundy
+- charcoal
+- coffee brown
+- copper
+- cream
+- fluorescent green
+- gold
+- green
+- grey
+- grey melange
+- khaki
+- lavender
+- lime green
+- magenta
+- maroon
+- mauve
+- metallic
+- multi
+- mushroom brown
+- mustard
+- navy blue
+- nude
+- off white
+- olive
+- orange
+- peach
+- pink
+- purple
+- red
+- rose
+- rust
+- sea green
+- silver
+- skin
+- tan
+- taupe
+- teal
+- turquoise blue
+- white
+- yellow
+
+--- Category: USAGE (8 tags) ---
+- casual
+- ethnic
+- formal
+- nan
+- party
+- smart casual
+- sports
+- travel
+
+--- Category: SEASON (5 tags) ---
+- fall
+- nan
+- spring
+- summer
+- winter
+
