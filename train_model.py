@@ -15,14 +15,14 @@ torch.set_float32_matmul_precision('medium')
 def train_model():
     path = kagglehub.dataset_download("paramaggarwal/fashion-product-images-dataset")
 
-    logger = CSVLogger("logs", name="fashion_model")
-
     dm = FashionDataModule(
         images_path=os.path.join(path, "fashion-dataset/images"),
         labels_path=os.path.join(path, "fashion-dataset/styles.csv"),
         batch_size=32,
         num_workers=2
     )
+
+    logger = CSVLogger("logs", name="fashion_model")
 
     dm.setup()
     model = FashionClassifier(num_classes_dict=dm.num_classes)

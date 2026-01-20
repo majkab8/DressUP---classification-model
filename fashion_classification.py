@@ -1,6 +1,5 @@
 import os
 import torch
-from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
@@ -10,8 +9,6 @@ from PIL import Image
 from pillow_heif import register_heif_opener
 from sklearn.preprocessing import LabelEncoder
 import pytorch_lightning as pl
-from torchvision.models import ResNet18_Weights
-import matplotlib.pyplot as plt
 import joblib
 
 

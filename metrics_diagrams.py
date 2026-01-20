@@ -42,10 +42,10 @@ def evaluate_model_comprehensive(model, datamodule):
             all_targets['season'].extend(t_season.numpy())
 
     heads_info = [
-        ('type', 'Type'),
-        ('color', 'Color'),
-        ('usage', 'Usage'),
-        ('season', 'Season')
+        ('type', 'Typ ubrania'),
+        ('color', 'Kolor'),
+        ('usage', 'Okazja'),
+        ('season', 'Sezon')
     ]
 
     sns.set_theme(style="white")
@@ -65,9 +65,9 @@ def evaluate_model_comprehensive(model, datamodule):
         plt.figure(figsize=(14, 12))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                     xticklabels=class_names, yticklabels=class_names)
-        plt.title(f'Confusion Matrix - {title}\nAccuracy: {acc:.2%}', fontsize=16)
-        plt.xlabel('Predicted')
-        plt.ylabel('True')
+        plt.title(f'Macierz pomyłek - {title}\nDokładność: {acc:.2%}', fontsize=16)
+        plt.xlabel('Przewidziane')
+        plt.ylabel('Prawdziwe')
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         plt.savefig(f"matrix_{key}.png")
@@ -89,15 +89,15 @@ def evaluate_model_comprehensive(model, datamodule):
         sns.set_theme(style="whitegrid")
 
         fig, axes = plt.subplots(1, 3, figsize=(20, len(class_names) * 0.4 + 4))
-        fig.suptitle(f'Metrics: {title}', fontsize=20, y=1.02)
+        fig.suptitle(f'Metryki: {title}', fontsize=20, y=1.02)
 
         sns.barplot(ax=axes[0], x=df['precision'], y=df.index, color='skyblue')
-        axes[0].set_title('Precision', fontsize=14)
+        axes[0].set_title('Precyzja', fontsize=14)
         axes[0].set_xlim(0, 1.1)
         axes[0].axvline(0.5, color='red', linestyle='--', alpha=0.3)
 
         sns.barplot(ax=axes[1], x=df['recall'], y=df.index, color='lightgreen')
-        axes[1].set_title('Recall', fontsize=14)
+        axes[1].set_title('Czułość', fontsize=14)
         axes[1].set_xlim(0, 1.1)
         axes[1].set_yticks([])
         axes[1].axvline(0.5, color='red', linestyle='--', alpha=0.3)
