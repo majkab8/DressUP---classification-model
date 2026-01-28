@@ -25,7 +25,7 @@ docker build -t dressup-ai-tagging:latest .
 ## 1,5. Run on docker
 
 ```bash
-docker run -d --rm -p 8000:8000 --name dressup-ai-tagging dressup-ai-tagging:latest
+docker run -d --rm -p 8001:8001 --name dressup-ai-tagging dressup-ai-tagging:latest
 ```
 
 ```bash
@@ -53,11 +53,7 @@ docker push dressupcontainerregistry.azurecr.io/dressup-ai-tagging:latest
 ## 5. Redeploy to Azure Container Apps
 
 ```bash
-az containerapp update --name dressup-ai-tagging --resource-group dressup-backend --image dressupcontainerregistry.azurecr.io/dressup-ai-tagging:latest
-```
-
-```bash
-az containerapp restart --name dressup-ai-tagging --resource-group dressup-backend
+az containerapp up --name dressup-ai-tagging --resource-group dressup-backend --image dressupcontainerregistry.azurecr.io/dressup-ai-tagging:latest
 ```
 ---
 

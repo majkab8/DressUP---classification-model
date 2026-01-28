@@ -16,8 +16,10 @@ encoders_path = "encoders.pkl"
 encoders = joblib.load(encoders_path)
 fashion_model = FashionModel(model_path=model_path, encoders=encoders)
 
+
 class AiBatchRequest(BaseModel):
     urls: List[str]
+
 
 @app.post("/predict_batch")
 async def predict_batch(req: AiBatchRequest):
@@ -49,4 +51,4 @@ async def predict_batch(req: AiBatchRequest):
                 "error": str(e)
             })
 
-    return {"results": results}
+    return results
